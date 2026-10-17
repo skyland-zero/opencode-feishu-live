@@ -7,6 +7,10 @@ Target OS: Linux with `systemd --user`.
 ```bash
 cd /root/dev/opencode-feishu-live
 npm install
+# Option A: create the Feishu bot with the one-click script (see README section
+# "一键创建飞书机器人"), then fill .env.runtime from feishu-app-credentials.json
+node scripts/create-feishu-app.mjs "OpenCode Live" "实时状态卡片版 opencode 桥接机器人"
+# Option B: use an existing app's credentials
 cp .env.example .env.runtime
 # edit .env.runtime: FEISHU_APP_ID, FEISHU_APP_SECRET, OPENCODE_PATH, OPENCODE_WORKING_DIR
 chmod 600 .env.runtime

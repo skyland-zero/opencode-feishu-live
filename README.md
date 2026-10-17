@@ -41,6 +41,44 @@
 
 > 状态卡片刷新使用「更新消息卡片」接口（PATCH），编辑文本消息使用「编辑消息」接口（PUT），两者均可用上行权限覆盖。
 
+## 一键创建飞书机器人（推荐，免手动配置）
+
+不需要去开发者后台逐项点选，本项目自带脚本可生成「一键创建应用」授权链接：
+
+```bash
+node scripts/create-feishu-app.mjs "OpenCode Live" "实时状态卡片版 opencode 桥接机器人"
+```
+
+原理：基于飞书开放的 OAuth 2.0 设备授权流程（Device Authorization Grant），调用
+`@larksuiteoapi/node-sdk` 的 `registerApp()` 生成授权链接，用户确认后自动创建应用并返回凭据。
+
+脚本行为：
+
+1. 生成授权链接并打印（同时写入 `.one-click-link.txt`），**1 小时内有效**；
+   确认页会预填：应用名/描述、上述 5 项权限、`im.message.receive_v1` 事件订阅、仅创建新应用；
+2. 你在飞书（手机或桌面端）打开链接 → 确认授权；
+3. 脚本自动获取 **App ID / App Secret**，写入 `feishu-app-credentials.json`（权限 600）。
+
+之后：
+
+```bash
+# 把凭证填入 .env.runtime
+cp .env.example .env.runtime   # 填入 App ID / Secret 等
+chmod 600 .env.runtime
+npm run build
+bash scripts/install-systemd-user.sh
+```
+
+补充说明：
+
+- 依赖要求：`@larksuiteoapi/node-sdk` >= 1.61.1（本项目依赖已满足，实际为 1.76.x）；
+- **权限/事件通过 `addons` 预填**（`preset:false` 最小基座，确认页只展示声明的配置）；
+- 「事件订阅方式 / 加密 key」属于敏感配置，链接无法预填 —— 但实测一键创建的应用**默认即为「长连接」订阅**，无需额外设置；
+  个别情况下收不到消息时，到 开发者后台 → 事件与回调 → 订阅方式 确认选择了「使用长连接接收事件/回调」（保存时 bridge 需处于运行状态）；
+- 需要为**已有应用**增量补权限（如换新 scope 后）：参考脚本内注释，去掉 `createOnly` 并传入 `appId: 'cli_xxx'`，用户再确认一次配置 diff 即可；
+- 安全：`feishu-app-credentials.json` 与 `.env.runtime` 均已加入 `.gitignore`，切勿提交或外发；
+- 官方文档：<https://open.feishu.cn/document/mcp_open_tools/integrating-agents-with-feishu/scan-to-create-an-app-in-one-click-nodejs>
+
 ## 快速开始
 
 ```bash
@@ -104,6 +142,7 @@ tail -f logs/systemd-bridge.log
 
 ## 二次开发提示
 
+- `scripts/create-feishu-app.mjs`：一键创建飞书机器人应用（设备授权流程，输出 App ID/Secret）
 - `src/agent/acp-connection.ts`：opencode acp 子进程管理（含断线重连）
 - `src/agent/live-session.ts`：ACP 会话封装 + 事件翻译（ActivityEvent）
 - `src/status/live-card.ts`：状态卡片渲染与刷新（卡片 → 文本编辑 → 限流消息 三级降级）

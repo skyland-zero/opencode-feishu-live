@@ -464,10 +464,11 @@ export class OpenCodeFeishuLive {
 
     if (mode === 'silent' || !info.interimEnabled) {
       const joined = info.blocks.map(block => block.trim()).filter(Boolean).join('\n\n');
+      const keepFooter = config.opencode.completionFooterEnabled && mode !== 'silent';
       if (joined) {
-        const suffix = config.opencode.completionFooterEnabled ? `\n\n———\n${footer}` : '';
+        const suffix = keepFooter ? `\n\n———\n${footer}` : '';
         await this.sendText(chatId, `${joined}${suffix}`);
-      } else if (config.opencode.completionFooterEnabled || info.status !== 'completed') {
+      } else if (keepFooter || info.status !== 'completed') {
         await this.sendText(chatId, footer);
       }
       return;
