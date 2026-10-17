@@ -113,7 +113,7 @@ async function main(): Promise<void> {
     ? undefined
     : statusCarrier === 'card'
       ? new LiveCard({ sink, chatId: 'dev-chat', command: prompt, model: config.opencode.model, mode })
-      : new StatusBubble({ sink, chatId: 'dev-chat', mode });
+      : new StatusBubble({ sink, chatId: 'dev-chat', mode, model: config.opencode.model });
   if (reporter) {
     await reporter.start();
   }
@@ -155,6 +155,7 @@ async function main(): Promise<void> {
     durationMs,
     usage: live.usage,
     stopReason,
+    model: live.currentModel() || config.opencode.model,
   });
 
   live.dispose();

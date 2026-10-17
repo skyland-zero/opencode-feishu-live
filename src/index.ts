@@ -281,7 +281,8 @@ export class OpenCodeFeishuLive {
     task.opencodeSessionId = managed.live.sessionId;
     this.handler.updateTask(task);
 
-    const reporter = this.buildStatusReporter(mode, chatId, turn.command, managed.bridgeId);
+    const modelUsed = managed.live.currentModel() || this.desiredModel.get(managed.bridgeId) || config.opencode.model;
+    const reporter = this.buildStatusReporter(mode, chatId, turn.command, managed.bridgeId, modelUsed);
     managed.currentReporter = reporter;
     if (reporter) {
       await reporter.start();
@@ -401,6 +402,7 @@ export class OpenCodeFeishuLive {
         usage,
         error: turnError?.message,
         stopReason,
+        model: modelUsed,
       });
     }
 
@@ -414,6 +416,7 @@ export class OpenCodeFeishuLive {
       blocks: collectedBlocks,
       suppressFooter: Boolean(reporter),
       replyTo,
+      model: modelUsed,
     });
 
     managed.running = false;
@@ -445,6 +448,8 @@ export class OpenCodeFeishuLive {
       suppressFooter: boolean;
       /** Feishu message id to reply-link these messages to. */
       replyTo?: string;
+      /** Model actually used for the turn (appended to the completion footer). */
+      model?: string;
     },
   ): Promise<void> {
     const footerBits: string[] = [];
@@ -459,6 +464,9 @@ export class OpenCodeFeishuLive {
     const usageText = formatUsage(info.usage);
     if (usageText) {
       footerBits.push(usageText);
+    }
+    if (info.model) {
+      footerBits.push(`模型 ${info.model}`);
     }
     const footer = footerBits.join(' · ');
 
@@ -558,7 +566,8 @@ export class OpenCodeFeishuLive {
         this.handler.updateTask(task);
       }
       if (reporter && !reporter.isFinalized) {
-        await reporter.finalize({ status: 'failed', durationMs: 0, error: message });
+        const model = managed.live.currentModel() || this.desiredModel.get(managed.bridgeId) || config.opencode.model;
+        await reporter.finalize({ status: 'failed', durationMs: 0, error: message, model });
       }
       managed.live.dispose();
       this.acpSessionIndex.delete(managed.live.sessionId);
@@ -737,6 +746,7 @@ export class OpenCodeFeishuLive {
     chatId: string,
     command: string,
     bridgeId: string,
+    model?: string,
   ): StatusReporter | undefined {
     if (mode !== 'normal' && mode !== 'debug') {
       return undefined;
@@ -745,16 +755,17 @@ export class OpenCodeFeishuLive {
       return undefined;
     }
     const sink = this.buildSink();
+    const displayModel = model || this.desiredModel.get(bridgeId) || config.opencode.model;
     if (config.opencode.statusMode === 'card') {
       return new LiveCard({
         sink,
         chatId,
         command,
-        model: this.desiredModel.get(bridgeId) || config.opencode.model,
+        model: displayModel,
         mode,
       });
     }
-    return new StatusBubble({ sink, chatId, mode });
+    return new StatusBubble({ sink, chatId, mode, model: displayModel });
   }
 
   private async resolveResponseMode(

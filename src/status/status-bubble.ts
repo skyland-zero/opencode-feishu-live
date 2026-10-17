@@ -50,14 +50,16 @@ export class StatusBubble implements StatusReporter {
 
   private toolLines = new Map<string, string>();
   private seq = 0;
+  private turnModel?: string;
 
   private static readonly EDIT_ROLLOVER = 18;
   private static readonly MAX_RENDER_CHARS = 3600;
 
-  constructor(options: { sink: StatusSink; chatId: string; mode: 'normal' | 'debug' }) {
+  constructor(options: { sink: StatusSink; chatId: string; mode: 'normal' | 'debug'; model?: string }) {
     this.sink = options.sink;
     this.chatId = options.chatId;
     this.debug = options.mode === 'debug';
+    this.turnModel = options.model;
   }
 
   get isFinalized(): boolean {
@@ -186,18 +188,20 @@ export class StatusBubble implements StatusReporter {
     }
 
     const duration = formatDuration(outcome.durationMs);
+    const model = outcome.model || this.turnModel;
+    const modelSuffix = model ? ` · 模型 ${model}` : '';
     if (outcome.status === 'completed') {
       const usage = formatUsage(outcome.usage);
       this.lines.push({
         id: 'final',
-        text: `🏁 完成 · 用时 ${duration}${usage ? ` · ${usage}` : ''}`,
+        text: `🏁 完成 · 用时 ${duration}${usage ? ` · ${usage}` : ''}${modelSuffix}`,
       });
     } else if (outcome.status === 'cancelled') {
-      this.lines.push({ id: 'final', text: `⏹️ 已取消 · 用时 ${duration}` });
+      this.lines.push({ id: 'final', text: `⏹️ 已取消 · 用时 ${duration}${modelSuffix}` });
     } else {
       this.lines.push({
         id: 'final',
-        text: `❌ 失败 · 用时 ${duration}${outcome.error ? `\n  ↳ ${previewText(outcome.error, 160)}` : ''}`,
+        text: `❌ 失败 · 用时 ${duration}${modelSuffix}${outcome.error ? `\n  ↳ ${previewText(outcome.error, 160)}` : ''}`,
       });
     }
 

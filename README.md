@@ -132,7 +132,7 @@ sleep 3 && echo BUBBLE_TEST
 ```
 ✅ shell · 3.4s
   ↳ BUBBLE_TEST
-🏁 完成 · 用时 8.5s · tokens 7.2k
+🏁 完成 · 用时 8.5s · tokens 7.2k · 模型 opencode/deepseek-v4.1-flash-free
 ~~~
 
 ## 主要配置项（.env.runtime）

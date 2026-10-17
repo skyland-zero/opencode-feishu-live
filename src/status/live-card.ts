@@ -223,18 +223,20 @@ export class LiveCard implements StatusReporter {
     }
 
     const duration = formatDuration(outcome.durationMs);
+    const model = outcome.model || this.model;
+    const modelSuffix = model ? ` · 模型 ${model}` : '';
     if (outcome.status === 'completed') {
       const usage = formatUsage(outcome.usage);
       this.pushLine({
         id: 'done',
-        text: `🏁 完成 · 用时 ${duration}${usage ? ` · ${usage}` : ''}`,
+        text: `🏁 完成 · 用时 ${duration}${usage ? ` · ${usage}` : ''}${modelSuffix}`,
       });
     } else if (outcome.status === 'cancelled') {
-      this.pushLine({ id: 'done', text: `⏹️ 已取消 · 用时 ${duration}` });
+      this.pushLine({ id: 'done', text: `⏹️ 已取消 · 用时 ${duration}${modelSuffix}` });
     } else {
       this.pushLine({
         id: 'done',
-        text: `❌ 失败 · 用时 ${duration}`,
+        text: `❌ 失败 · 用时 ${duration}${modelSuffix}`,
         sub: outcome.error ? previewText(outcome.error, 160) : undefined,
       });
     }

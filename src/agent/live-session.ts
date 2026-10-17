@@ -37,11 +37,16 @@ export class LiveSession extends EventEmitter {
   private tools = new Map<string, ToolState>();
   private lastUsage?: TokenUsage;
   private availableCommands: Array<{ name: string; description?: string }> = [];
+  private configOptionsState: Array<{ id: string; name?: string; currentValue?: unknown; options?: unknown }> = [];
 
   constructor(connection: AcpConnection, acpSession: acp.ActiveSession) {
     super();
     this.connection = connection;
     this.acpSession = acpSession;
+    const raw = acpSession.newSessionResponse as { configOptions?: unknown };
+    if (Array.isArray(raw.configOptions)) {
+      this.configOptionsState = raw.configOptions as Array<{ id: string; name?: string; currentValue?: unknown; options?: unknown }>;
+    }
     void this.drain();
   }
 
@@ -62,9 +67,13 @@ export class LiveSession extends EventEmitter {
   }
 
   get configOptions(): Array<{ id: string; name?: string; currentValue?: unknown; options?: unknown }> {
-    const raw = this.acpSession.newSessionResponse as { configOptions?: unknown };
-    const options = Array.isArray(raw.configOptions) ? raw.configOptions : [];
-    return options as Array<{ id: string; name?: string; currentValue?: unknown; options?: unknown }>;
+    return this.configOptionsState;
+  }
+
+  /** Current model value of the live ACP session (e.g. "opencode/deepseek-v4.1-flash-free"). */
+  currentModel(): string | undefined {
+    const modelOption = this.configOptionsState.find(option => option.id === 'model');
+    return typeof modelOption?.currentValue === 'string' ? modelOption.currentValue : undefined;
   }
 
   /** Send a prompt. Bridge side must serialize: call only while not busy. */
@@ -106,11 +115,20 @@ export class LiveSession extends EventEmitter {
   }
 
   async setConfigOption(configId: string, value: string): Promise<void> {
-    await this.connection.ctx.request(acp.methods.agent.session.setConfigOption, {
+    const response = await this.connection.ctx.request(acp.methods.agent.session.setConfigOption, {
       sessionId: this.acpSession.sessionId,
       configId,
       value,
     });
+    const configOptions = (response as { configOptions?: unknown } | undefined)?.configOptions;
+    if (Array.isArray(configOptions)) {
+      this.configOptionsState = configOptions as Array<{ id: string; name?: string; currentValue?: unknown; options?: unknown }>;
+    } else {
+      // Fall back to a local patch so currentModel() reflects the switch immediately.
+      this.configOptionsState = this.configOptionsState.map(option =>
+        option.id === configId ? { ...option, currentValue: value } : option,
+      );
+    }
   }
 
   dispose(): void {
@@ -271,7 +289,11 @@ export class LiveSession extends EventEmitter {
         return;
       }
       case 'config_option_update': {
-        this.emit('config_options', (update as { configOptions?: unknown }).configOptions);
+        const configOptions = (update as { configOptions?: unknown }).configOptions;
+        if (Array.isArray(configOptions)) {
+          this.configOptionsState = configOptions as Array<{ id: string; name?: string; currentValue?: unknown; options?: unknown }>;
+        }
+        this.emit('config_options', configOptions);
         return;
       }
       case 'available_commands_update': {

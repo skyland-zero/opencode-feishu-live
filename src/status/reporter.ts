@@ -6,6 +6,8 @@ export interface StatusFinalizeOutcome {
   usage?: TokenUsage;
   error?: string;
   stopReason?: string;
+  /** Model actually used for the turn (shown in the completion line). */
+  model?: string;
 }
 
 /**
