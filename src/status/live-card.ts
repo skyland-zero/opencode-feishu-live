@@ -123,7 +123,7 @@ export class LiveCard implements StatusReporter {
         if (event.chars > 0) {
           bits.push(`${event.chars} 字`);
         }
-        this.pushLine({ id: `think-${event.at}`, text: `🧠 思考完成${bits.length ? ` · ${bits.join(' · ')}` : ''}` });
+        this.pushLine({ id: `think-${event.at}`, text: `💭 思考完成${bits.length ? ` · ${bits.join(' · ')}` : ''}` });
         this.markDirty();
         return;
       }
@@ -281,7 +281,7 @@ export class LiveCard implements StatusReporter {
     const elapsed = formatClock(Date.now() - this.startedAt);
     if (this.activity) {
       if (this.activity.kind === 'thinking') {
-        return `**🧠 思考中…** · 已用 ${elapsed}${config.opencode.showThinking ? ` · 推理 ${this.activity.chars} 字` : ''}`;
+        return `**💭 思考中…** · 已用 ${elapsed}${config.opencode.showThinking ? ` · 推理 ${this.activity.chars} 字` : ''}`;
       }
       if (this.activity.kind === 'tool') {
         const toolElapsed = formatDuration(Date.now() - this.activity.startedAt);

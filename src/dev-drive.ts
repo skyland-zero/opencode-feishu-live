@@ -48,11 +48,11 @@ function describeEvent(event: ActivityEvent): string {
     case 'turn_start':
       return '▶ turn_start';
     case 'thinking_start':
-      return '🧠 thinking_start';
+      return '💭 thinking_start';
     case 'thinking_delta':
-      return `🧠 thinking_delta +${event.text.length}ch`;
+      return `💭 thinking_delta +${event.text.length}ch`;
     case 'thinking_end':
-      return `🧠 thinking_end (${(event.durationMs / 1000).toFixed(1)}s, ${event.chars}ch)`;
+      return `💭 thinking_end (${(event.durationMs / 1000).toFixed(1)}s, ${event.chars}ch)`;
     case 'text_start':
       return '✍️ text_start';
     case 'text_delta':

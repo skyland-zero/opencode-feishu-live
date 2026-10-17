@@ -20,7 +20,7 @@ interface BubbleLine {
  * activities arrive (throttled), Hermes-style:
  *  - tool lines: `{emoji} {tool}` + fenced command block, collapsed to
  *    `✅ {tool} · 5.4s` when finished (static while running — no ticking)
- *  - thinking lines: `🧠 思考中…` replaced by `🧠 思考完成 · 2.7s` when done
+ *  - thinking lines: `💭 思考中…` replaced by `💭 思考完成 · 2.7s` when done
  *  - when interim content is delivered to the chat, the bubble is sealed and the
  *    next activity opens a fresh one (chat feed: [bubble][content][bubble]…)
  *  - edits are capped (Feishu allows 20 per message): after 18 edits the bubble
@@ -69,7 +69,7 @@ export class StatusBubble implements StatusReporter {
   }
 
   async start(): Promise<void> {
-    this.lines.push({ id: 'start', text: '💭 开始处理…' });
+    this.lines.push({ id: 'start', text: '🚀 开始处理…' });
     await this.flush(true);
   }
 
@@ -86,7 +86,7 @@ export class StatusBubble implements StatusReporter {
       case 'turn_start':
         return;
       case 'thinking_start':
-        this.pushLine({ id: `think-${++this.seq}`, text: '🧠 思考中…' });
+        this.pushLine({ id: `think-${++this.seq}`, text: '💭 思考中…' });
         return;
       case 'thinking_end': {
         const line = this.findPrefix('think-');
@@ -97,7 +97,7 @@ export class StatusBubble implements StatusReporter {
         if (event.chars > 0) {
           bits.push(`${event.chars} 字`);
         }
-        const text = `🧠 思考完成${bits.length ? ` · ${bits.join(' · ')}` : ''}`;
+        const text = `💭 思考完成${bits.length ? ` · ${bits.join(' · ')}` : ''}`;
         if (line) {
           line.text = text;
         } else {
