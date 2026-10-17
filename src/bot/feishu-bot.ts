@@ -51,16 +51,17 @@ export class FeishuBot extends EventEmitter {
     content: string,
     msgType: string = 'text',
     replyToMessageId?: string,
+    preferPost: boolean = false,
   ): Promise<string | undefined> {
-    return this.wsClient.sendMessage(chatId, content, msgType, replyToMessageId);
+    return this.wsClient.sendMessage(chatId, content, msgType, replyToMessageId, preferPost);
   }
 
   async patchCard(messageId: string, card: Record<string, unknown>): Promise<void> {
     await this.wsClient.patchCard(messageId, card);
   }
 
-  async editTextMessage(messageId: string, text: string): Promise<void> {
-    await this.wsClient.editTextMessage(messageId, text);
+  async editTextMessage(messageId: string, text: string, preferPost: boolean = false): Promise<void> {
+    await this.wsClient.editTextMessage(messageId, text, preferPost);
   }
 
   async sendFile(chatId: string, filePath: string): Promise<void> {

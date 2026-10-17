@@ -6,6 +6,12 @@ import { basename, extname } from 'path';
 import * as lark from '@larksuiteoapi/node-sdk';
 import type { FeishuBotConfig, FeishuMessage, FeishuMessageEvent, FeishuSender } from '../types.js';
 import { Logger } from '../utils/logger.js';
+import {
+  buildMarkdownPostPayload,
+  hasMarkdownHints,
+  isPostContentInvalidError,
+  stripMarkdownToPlainText,
+} from './markdown-post.js';
 
 interface LarkMessageEventData {
   event_id?: string;
@@ -30,6 +36,16 @@ const EMPTY_MESSAGE: FeishuMessage = {
   message_type: 'text',
   content: '',
 };
+
+interface OutboundPayload {
+  msgType: string;
+  content: string;
+}
+
+interface PayloadPlan {
+  primary: OutboundPayload;
+  fallback?: OutboundPayload;
+}
 
 export class FeishuWSClient extends EventEmitter {
   private readonly config: FeishuBotConfig;
@@ -94,31 +110,25 @@ export class FeishuWSClient extends EventEmitter {
   }
 
   /**
-   * Send a message. When replyToMessageId is given, the message is delivered as a
-   * Feishu reply (quoted) to that message; if the reply target is gone the call
-   * falls back to a plain new message.
+   * Send a message. Markdown-looking content goes out as a Feishu `post` with
+   * `md` elements (so Feishu renders bold/tables/code blocks); `preferPost`
+   * forces the post path for multi-chunk messages that were classified as
+   * markdown at the whole-message level. When replyToMessageId is given, the
+   * message is delivered as a Feishu reply (quoted) to that message; if the
+   * reply target is gone the call falls back to a plain new message.
    */
   async sendMessage(
     chatId: string,
     content: string,
     msgType: string = 'text',
     replyToMessageId?: string,
+    preferPost: boolean = false,
   ): Promise<string | undefined> {
-    const payloadContent = this.formatMessageContent(content, msgType);
+    const plan = this.buildPayloadPlan(content, msgType, preferPost);
 
     if (replyToMessageId) {
       try {
-        const resp = await this.client.im.v1.message.reply({
-          path: { message_id: replyToMessageId },
-          data: {
-            content: payloadContent,
-            msg_type: msgType,
-          },
-        });
-        if (resp.code !== 0) {
-          throw new Error(`reply failed: ${resp.msg} (code=${resp.code})`);
-        }
-        return resp.data?.message_id;
+        return await this.sendOnce({ chatId, plan, replyTo: replyToMessageId });
       } catch (error) {
         Logger.warn(
           'FeishuWSClient',
@@ -130,21 +140,7 @@ export class FeishuWSClient extends EventEmitter {
     Logger.info('FeishuWSClient', `Sending message to chat ${chatId}`);
 
     try {
-      const resp = await this.client.im.v1.message.create({
-        params: {
-          receive_id_type: 'chat_id',
-        },
-        data: {
-          receive_id: chatId,
-          msg_type: msgType,
-          content: payloadContent,
-        },
-      });
-
-      if (resp.code !== 0) {
-        throw new Error(`Failed to send message: ${resp.msg}`);
-      }
-      return resp.data?.message_id;
+      return await this.sendOnce({ chatId, plan });
     } catch (error) {
       Logger.error('FeishuWSClient', `Failed to send message: ${this.getErrorMessage(error)}`);
       throw error;
@@ -168,19 +164,33 @@ export class FeishuWSClient extends EventEmitter {
   }
 
   /** Edit a text message previously sent by this bot (PUT /im/v1/messages/:id). */
-  async editTextMessage(messageId: string, text: string): Promise<void> {
-    try {
-      const resp = await this.client.im.v1.message.update({
-        path: { message_id: messageId },
-        data: { msg_type: 'text', content: JSON.stringify({ text }) },
-      });
-      if (resp.code !== 0) {
-        throw new Error(`Failed to edit message: ${resp.msg} (code=${resp.code})`);
+  async editTextMessage(messageId: string, text: string, preferPost: boolean = false): Promise<void> {
+    const plan = this.buildPayloadPlan(text, 'text', preferPost);
+    const variants: OutboundPayload[] = plan.fallback ? [plan.primary, plan.fallback] : [plan.primary];
+
+    let lastError: unknown;
+    for (let index = 0; index < variants.length; index += 1) {
+      const variant = variants[index];
+      try {
+        const resp = await this.client.im.v1.message.update({
+          path: { message_id: messageId },
+          data: { msg_type: variant.msgType, content: variant.content },
+        });
+        if (resp.code !== 0) {
+          throw new Error(`Failed to edit message: ${resp.msg} (code=${resp.code})`);
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        if (index === 0 && variants.length > 1 && isPostContentInvalidError(error)) {
+          Logger.warn('FeishuWSClient', `Post edit rejected for ${messageId}; retrying as plain text`);
+          continue;
+        }
+        Logger.warn('FeishuWSClient', `Failed to edit message ${messageId}: ${this.getErrorMessage(error)}`);
+        throw error;
       }
-    } catch (error) {
-      Logger.warn('FeishuWSClient', `Failed to edit message ${messageId}: ${this.getErrorMessage(error)}`);
-      throw error;
     }
+    throw lastError instanceof Error ? lastError : new Error('Failed to edit message');
   }
 
   async sendFile(chatId: string, filePath: string): Promise<void> {
@@ -379,6 +389,62 @@ export class FeishuWSClient extends EventEmitter {
     if (type.includes('tiff')) return '.tiff';
     if (type.includes('x-icon') || type.includes('icon')) return '.ico';
     return '.jpg';
+  }
+
+  // ------------------------------------------------------------------
+  // Outbound payload planning (markdown → post, with plain-text fallback)
+  // ------------------------------------------------------------------
+
+  private buildPayloadPlan(content: string, msgType: string, preferPost: boolean): PayloadPlan {
+    if (msgType !== 'text') {
+      return { primary: { msgType, content: this.formatMessageContent(content, msgType) } };
+    }
+    if (preferPost || hasMarkdownHints(content)) {
+      return {
+        primary: { msgType: 'post', content: buildMarkdownPostPayload(content) },
+        fallback: { msgType: 'text', content: JSON.stringify({ text: stripMarkdownToPlainText(content) }) },
+      };
+    }
+    return { primary: { msgType: 'text', content: JSON.stringify({ text: content }) } };
+  }
+
+  /** One send attempt (reply or create) walking the plan, post → plain-text on format rejection. */
+  private async sendOnce(params: {
+    chatId: string;
+    plan: PayloadPlan;
+    replyTo?: string;
+  }): Promise<string | undefined> {
+    const variants: OutboundPayload[] = params.plan.fallback
+      ? [params.plan.primary, params.plan.fallback]
+      : [params.plan.primary];
+
+    let lastError: unknown;
+    for (let index = 0; index < variants.length; index += 1) {
+      const variant = variants[index];
+      try {
+        const resp = params.replyTo
+          ? await this.client.im.v1.message.reply({
+              path: { message_id: params.replyTo },
+              data: { content: variant.content, msg_type: variant.msgType },
+            })
+          : await this.client.im.v1.message.create({
+              params: { receive_id_type: 'chat_id' },
+              data: { receive_id: params.chatId, msg_type: variant.msgType, content: variant.content },
+            });
+        if (resp.code !== 0) {
+          throw new Error(`${resp.msg} (code=${resp.code})`);
+        }
+        return resp.data?.message_id;
+      } catch (error) {
+        lastError = error;
+        if (index === 0 && variants.length > 1 && isPostContentInvalidError(error)) {
+          Logger.warn('FeishuWSClient', 'Post payload rejected by API; retrying as plain text');
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('send failed');
   }
 
   private formatMessageContent(content: string, msgType: string): string {

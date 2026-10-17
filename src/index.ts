@@ -3,6 +3,7 @@ import { access, mkdir, rm } from 'node:fs/promises';
 import { basename, extname, isAbsolute, join, resolve } from 'node:path';
 import * as acp from '@agentclientprotocol/sdk';
 import { FeishuBot } from './bot/feishu-bot.js';
+import { hasMarkdownHints } from './bot/markdown-post.js';
 import { config } from './config.js';
 import { AcpConnection } from './agent/acp-connection.js';
 import { LiveSession } from './agent/live-session.js';
@@ -732,12 +733,12 @@ export class OpenCodeFeishuLive {
   // Helpers
   // ------------------------------------------------------------------
 
-  private buildSink(): StatusSink {
+  private buildSink(forcePost: boolean = false): StatusSink {
     return {
       sendCard: async (chatId, card) => this.bot.sendMessage(chatId, JSON.stringify(card), 'interactive'),
       patchCard: async (_chatId, messageId, card) => this.bot.patchCard(messageId, card),
-      sendText: async (chatId, text) => this.bot.sendMessage(chatId, text),
-      editText: async (_chatId, messageId, text) => this.bot.editTextMessage(messageId, text),
+      sendText: async (chatId, text) => this.bot.sendMessage(chatId, text, 'text', undefined, forcePost),
+      editText: async (_chatId, messageId, text) => this.bot.editTextMessage(messageId, text, forcePost),
     };
   }
 
@@ -754,7 +755,7 @@ export class OpenCodeFeishuLive {
     if (!config.opencode.statusEnabled || config.opencode.statusMode === 'off') {
       return undefined;
     }
-    const sink = this.buildSink();
+    const sink = this.buildSink(true);
     const displayModel = model || this.desiredModel.get(bridgeId) || config.opencode.model;
     if (config.opencode.statusMode === 'card') {
       return new LiveCard({
@@ -824,13 +825,16 @@ export class OpenCodeFeishuLive {
 
   private async sendText(chatId: string, text: string, replyTo?: string): Promise<void> {
     const chunks = splitText(text, this.MAX_TEXT_CHUNK);
+    // Lock the markdown-vs-text decision at the whole-message level (Hermes #26841):
+    // a chunk of a markdown reply may look like plain prose on its own.
+    const preferPost = hasMarkdownHints(text);
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
       if (!chunk) {
         continue;
       }
       const body = chunks.length > 1 ? `（${index + 1}/${chunks.length}）\n${chunk}` : chunk;
-      await this.bot.sendMessage(chatId, body, 'text', replyTo);
+      await this.bot.sendMessage(chatId, body, 'text', replyTo, preferPost);
     }
   }
 
