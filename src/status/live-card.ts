@@ -1,6 +1,9 @@
 import { config } from '../config.js';
 import { logger } from '../utils/logger.js';
 import type { ActivityEvent, TokenUsage } from '../types.js';
+import type { StatusFinalizeOutcome, StatusReporter } from './reporter.js';
+
+export type { StatusFinalizeOutcome as LiveCardFinalizeOutcome } from './reporter.js';
 
 export interface StatusSink {
   sendCard(chatId: string, card: Record<string, unknown>): Promise<string | undefined>;
@@ -24,22 +27,8 @@ interface ActiveActivity {
   label?: string;
 }
 
-export interface LiveCardFinalizeOutcome {
-  status: 'completed' | 'failed' | 'cancelled';
-  durationMs: number;
-  usage?: TokenUsage;
-  error?: string;
-  stopReason?: string;
-}
-
-/**
- * One live status message per task.
- *
- * Primary carrier is an interactive card patched in place (no edit-count cap).
- * Falls back to text-message editing (20 edits max, then rollover) and finally
- * to rate-limited standalone messages if the platform rejects edits.
- */
-export class LiveCard {
+/** Card carrier for the live status message (kept as an alternative to the default text bubble). */
+export class LiveCard implements StatusReporter {
   private readonly sink: StatusSink;
   private readonly chatId: string;
   private readonly command: string;
@@ -50,7 +39,7 @@ export class LiveCard {
   private activity: ActiveActivity | null = null;
   private startedAt = Date.now();
   private done = false;
-  private outcome: LiveCardFinalizeOutcome | null = null;
+  private outcome: StatusFinalizeOutcome | null = null;
 
   private carrier: 'card' | 'text' | 'burst' = 'card';
   private messageId?: string;
@@ -91,6 +80,11 @@ export class LiveCard {
   async start(): Promise<void> {
     this.pushLine({ id: 'start', text: '🚀 任务开始' });
     await this.flush(true);
+  }
+
+  /** Card carrier shows interim content inline via the chat feed; nothing to split. */
+  noteContentSent(): void {
+    // no-op for the card carrier
   }
 
   /** Feed one activity event from the agent session. */
@@ -216,7 +210,7 @@ export class LiveCard {
     }
   }
 
-  async finalize(outcome: LiveCardFinalizeOutcome): Promise<void> {
+  async finalize(outcome: StatusFinalizeOutcome): Promise<void> {
     if (this.done) {
       return;
     }

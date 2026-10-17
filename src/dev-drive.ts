@@ -1,14 +1,16 @@
 /**
- * Dev harness: drives the live pipeline (ACP -> activities -> live card)
+ * Dev harness: drives the live pipeline (ACP -> activities -> status reporter)
  * without Feishu. Prints what would be sent to the chat.
  *
  * Usage:
- *   node dist/dev-drive.js "your prompt here" [--mode normal|debug]
+ *   node dist/dev-drive.js "your prompt here" [--mode normal|debug] [--status bubble|card|off]
  */
 import { config } from './config.js';
 import { AcpConnection } from './agent/acp-connection.js';
 import { LiveSession } from './agent/live-session.js';
 import { LiveCard, type StatusSink } from './status/live-card.js';
+import { StatusBubble } from './status/status-bubble.js';
+import type { StatusReporter } from './status/reporter.js';
 import type { ActivityEvent } from './types.js';
 import { logger } from './utils/logger.js';
 
@@ -34,7 +36,7 @@ const sink: StatusSink = {
   },
   sendText: async (_chatId, text) => {
     console.log(`\n########## [CHAT MESSAGE] ##########\n${text}\n`);
-    return `text_msg_${Date.now()}`;
+    return `text_msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   },
   editText: async (_chatId, messageId, text) => {
     console.log(`\n##### [CHAT EDIT ${messageId}] #####\n${text}\n`);
@@ -62,7 +64,7 @@ function describeEvent(event: ActivityEvent): string {
     case 'permission':
       return `🔐 permission ${event.decision}: ${event.title}`;
     case 'usage':
-      return `📊 usage`;
+      return '📊 usage';
     case 'turn_end':
       return `⏹ turn_end reason=${event.stopReason}`;
     default:
@@ -74,13 +76,26 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const modeFlagIndex = args.indexOf('--mode');
   const mode = (modeFlagIndex >= 0 ? args[modeFlagIndex + 1] : 'debug') as 'normal' | 'debug';
+  const statusFlagIndex = args.indexOf('--status');
+  const statusCarrier = (statusFlagIndex >= 0 ? args[statusFlagIndex + 1] : config.opencode.statusMode) as
+    | 'bubble'
+    | 'card'
+    | 'off';
   const prompt = args
-    .filter((item, index) => !(item === '--mode' || (modeFlagIndex >= 0 && index === modeFlagIndex + 1)))
+    .filter((item, index) =>
+      !(
+        item === '--mode' ||
+        (modeFlagIndex >= 0 && index === modeFlagIndex + 1) ||
+        item === '--status' ||
+        (statusFlagIndex >= 0 && index === statusFlagIndex + 1)
+      ),
+    )
     .join(' ')
     .trim() || '运行命令 sleep 2 && echo READY，然后用两三句话说明 READY 是什么。';
 
   console.log(`workdir: ${config.opencode.workingDir}`);
   console.log(`opencode: ${config.opencode.path}`);
+  console.log(`status carrier: ${statusCarrier}`);
   console.log(`prompt: ${prompt}\n`);
 
   const connection = new AcpConnection();
@@ -93,23 +108,25 @@ async function main(): Promise<void> {
 
   const acpSession = await connection.ctx.buildSession({ cwd: config.opencode.workingDir, mcpServers: [] }).start();
   const live = new LiveSession(connection, acpSession);
-  const card = new LiveCard({
-    sink,
-    chatId: 'dev-chat',
-    command: prompt,
-    model: config.opencode.model,
-    mode,
-  });
-  await card.start();
+
+  const reporter: StatusReporter | undefined = statusCarrier === 'off'
+    ? undefined
+    : statusCarrier === 'card'
+      ? new LiveCard({ sink, chatId: 'dev-chat', command: prompt, model: config.opencode.model, mode })
+      : new StatusBubble({ sink, chatId: 'dev-chat', mode });
+  if (reporter) {
+    await reporter.start();
+  }
 
   let done = false;
   let stopReason: string | undefined;
 
   live.on('activity', (event: ActivityEvent) => {
     console.log(`[event] ${describeEvent(event)}`);
-    card.handleActivity(event);
+    reporter?.handleActivity(event);
     if (event.type === 'text_end' && config.opencode.interimTextEnabled) {
       console.log(`[interim candidate] ${event.text.trim().slice(0, 120).replace(/\n/g, ' ⏎ ')}…`);
+      reporter?.noteContentSent();
     }
     if (event.type === 'turn_end') {
       stopReason = event.stopReason;
@@ -133,7 +150,7 @@ async function main(): Promise<void> {
   const durationMs = Date.now() - startedAt;
   console.log(`\n▶ turn finished: stopReason=${stopReason} duration=${(durationMs / 1000).toFixed(1)}s`);
 
-  await card.finalize({
+  await reporter?.finalize({
     status: stopReason === 'cancelled' ? 'cancelled' : 'completed',
     durationMs,
     usage: live.usage,

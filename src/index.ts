@@ -8,6 +8,8 @@ import { AcpConnection } from './agent/acp-connection.js';
 import { LiveSession } from './agent/live-session.js';
 import { classifyIntent } from './agent/intent-router.js';
 import { LiveCard, formatDuration, formatUsage, type StatusSink } from './status/live-card.js';
+import { StatusBubble } from './status/status-bubble.js';
+import type { StatusReporter } from './status/reporter.js';
 import { MessageHandler } from './relay/message-handler.js';
 import type {
   ActivityEvent,
@@ -33,7 +35,7 @@ interface ManagedSession {
   live: LiveSession;
   running: boolean;
   currentTaskId?: string;
-  currentCard?: LiveCard;
+  currentReporter?: StatusReporter;
   queue: QueuedTurn[];
   creating?: Promise<ManagedSession>;
 }
@@ -78,7 +80,7 @@ export class OpenCodeFeishuLive {
         return;
       }
       const managed = this.sessions.get(bridgeId);
-      managed?.currentCard?.handleActivity({
+      managed?.currentReporter?.handleActivity({
         type: 'permission',
         at: Date.now(),
         title: info.title,
@@ -276,18 +278,10 @@ export class OpenCodeFeishuLive {
     task.opencodeSessionId = managed.live.sessionId;
     this.handler.updateTask(task);
 
-    const card = mode === 'normal' || mode === 'debug'
-      ? new LiveCard({
-          sink: this.buildSink(),
-          chatId,
-          command: turn.command,
-          model: this.desiredModel.get(managed.bridgeId) || config.opencode.model,
-          mode,
-        })
-      : undefined;
-    managed.currentCard = card;
-    if (card) {
-      await card.start();
+    const reporter = this.buildStatusReporter(mode, chatId, turn.command, managed.bridgeId);
+    managed.currentReporter = reporter;
+    if (reporter) {
+      await reporter.start();
     }
 
     const collectedBlocks: string[] = [];
@@ -309,7 +303,7 @@ export class OpenCodeFeishuLive {
     };
 
     const onActivity = (event: ActivityEvent): void => {
-      card?.handleActivity(event);
+      reporter?.handleActivity(event);
       if (event.type === 'text_end') {
         collectedBlocks.push(event.text);
         task.output.push(event.text);
@@ -328,6 +322,7 @@ export class OpenCodeFeishuLive {
             }
             await flushHeld();
             await this.sendText(chatId, trimmed);
+            reporter?.noteContentSent();
           })
           .catch((error: unknown) => {
             logger.warn(`Failed to forward interim text: ${error instanceof Error ? error.message : String(error)}`);
@@ -395,8 +390,8 @@ export class OpenCodeFeishuLive {
     }
     this.handler.updateTask(task);
 
-    if (card) {
-      await card.finalize({
+    if (reporter) {
+      await reporter.finalize({
         status,
         durationMs: turnDurationMs,
         usage,
@@ -413,11 +408,12 @@ export class OpenCodeFeishuLive {
       interimEnabled: config.opencode.interimTextEnabled && mode !== 'silent',
       hasBlocks: collectedBlocks.length > 0,
       blocks: collectedBlocks,
+      suppressFooter: Boolean(reporter),
     });
 
     managed.running = false;
     managed.currentTaskId = undefined;
-    managed.currentCard = undefined;
+    managed.currentReporter = undefined;
 
     const next = managed.queue.shift();
     if (next) {
@@ -440,6 +436,8 @@ export class OpenCodeFeishuLive {
       interimEnabled: boolean;
       hasBlocks: boolean;
       blocks: string[];
+      /** True when a status reporter (bubble/card) already carries the completion line. */
+      suppressFooter: boolean;
     },
   ): Promise<void> {
     const footerBits: string[] = [];
@@ -464,7 +462,7 @@ export class OpenCodeFeishuLive {
 
     if (mode === 'silent' || !info.interimEnabled) {
       const joined = info.blocks.map(block => block.trim()).filter(Boolean).join('\n\n');
-      const keepFooter = config.opencode.completionFooterEnabled && mode !== 'silent';
+      const keepFooter = config.opencode.completionFooterEnabled && mode !== 'silent' && !info.suppressFooter;
       if (joined) {
         const suffix = keepFooter ? `\n\n———\n${footer}` : '';
         await this.sendText(chatId, `${joined}${suffix}`);
@@ -474,7 +472,8 @@ export class OpenCodeFeishuLive {
       return;
     }
 
-    if (config.opencode.completionFooterEnabled || info.status !== 'completed') {
+    const keepFooter = config.opencode.completionFooterEnabled && !info.suppressFooter;
+    if (keepFooter || info.status !== 'completed') {
       await this.sendText(chatId, footer);
     }
   }
@@ -542,7 +541,7 @@ export class OpenCodeFeishuLive {
 
   private async failAllActiveTurns(message: string): Promise<void> {
     for (const managed of this.sessions.values()) {
-      const card = managed.currentCard;
+      const reporter = managed.currentReporter;
       const taskId = managed.currentTaskId;
       const task = taskId ? this.tasks.get(taskId) : undefined;
       if (task) {
@@ -551,13 +550,13 @@ export class OpenCodeFeishuLive {
         task.completedAt = new Date();
         this.handler.updateTask(task);
       }
-      if (card && !card.isFinalized) {
-        await card.finalize({ status: 'failed', durationMs: 0, error: message });
+      if (reporter && !reporter.isFinalized) {
+        await reporter.finalize({ status: 'failed', durationMs: 0, error: message });
       }
       managed.live.dispose();
       this.acpSessionIndex.delete(managed.live.sessionId);
       managed.running = false;
-      managed.currentCard = undefined;
+      managed.currentReporter = undefined;
       managed.currentTaskId = undefined;
       managed.queue = [];
     }
@@ -721,6 +720,31 @@ export class OpenCodeFeishuLive {
       sendText: async (chatId, text) => this.bot.sendMessage(chatId, text),
       editText: async (_chatId, messageId, text) => this.bot.editTextMessage(messageId, text),
     };
+  }
+
+  private buildStatusReporter(
+    mode: TaskResponseMode,
+    chatId: string,
+    command: string,
+    bridgeId: string,
+  ): StatusReporter | undefined {
+    if (mode !== 'normal' && mode !== 'debug') {
+      return undefined;
+    }
+    if (!config.opencode.statusEnabled || config.opencode.statusMode === 'off') {
+      return undefined;
+    }
+    const sink = this.buildSink();
+    if (config.opencode.statusMode === 'card') {
+      return new LiveCard({
+        sink,
+        chatId,
+        command,
+        model: this.desiredModel.get(bridgeId) || config.opencode.model,
+        mode,
+      });
+    }
+    return new StatusBubble({ sink, chatId, mode });
   }
 
   private async resolveResponseMode(

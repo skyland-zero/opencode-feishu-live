@@ -5,8 +5,8 @@
 - 🧠 **思考中 / 思考完成**（推理过程的开始与结束，含字数）
 - 🔧 **工具调用全生命周期**：准备调用 → 执行中 → 完成/失败（含耗时与输出预览）
 - ✍️ **过程文本**：模型执行中说出的内容按段落即时发出
-- 📊 **实时状态卡片**：单条消息原地刷新（头部状态 + 活动记录滚动窗口 + 模型/任务信息）
-- 🔐 **权限请求**自动应答（可配置 allow/reject），并在卡片中记录
+- 📊 **Hermes 风格进度气泡**：执行过程是一条普通文本消息原地刷新（工具行 + 命令代码块），非卡片；可切换卡片载体
+- 🔐 **权限请求**自动应答（可配置 allow/reject），并在进度气泡中记录
 
 与旧版 `opencode-feishu-bridge` 的区别：不再解析 CLI 的一次性 JSON 输出，而是直连 opencode 的 ACP 服务（`opencode acp`），因此能拿到**流式**的思考块、工具开始/进行/完成事件，以及逐段文本。
 
@@ -116,9 +116,23 @@ tail -f logs/systemd-bridge.log
 
 | 模式 | 行为 |
 |------|------|
-| `quiet` | 不发状态卡片；只发过程文本与最终结果 |
-| `normal`（默认） | 实时状态卡片 + 过程文本 + 完成小结 |
+| `quiet` | 不发进度气泡；只发过程文本与最终结果 |
+| `normal`（默认） | Hermes 风格进度气泡（思考/工具行原地刷新）+ 过程文本 |
 | `debug` | 上述全部 + 推理预览 + 更完整的工具输出 |
+
+进度气泡示例（工具命令为代码块，完成后同一行改为 ✅）：
+
+~~~text
+💭 开始处理…
+🧠 思考完成 · 472 字
+⚙️ shell
+```
+sleep 3 && echo BUBBLE_TEST
+```
+✅ shell · 3.4s
+  ↳ BUBBLE_TEST
+🏁 完成 · 用时 8.5s · tokens 7.2k
+~~~
 
 ## 主要配置项（.env.runtime）
 
@@ -128,8 +142,9 @@ tail -f logs/systemd-bridge.log
 | `OPENCODE_PATH` | `opencode` | opencode 可执行文件路径 |
 | `OPENCODE_WORKING_DIR` | `.` | 任务工作目录（也是 ACP 会话的 cwd） |
 | `OPENCODE_MODEL` | 空 | 默认模型（如 `opencode/deepseek-v4.1-flash-free`） |
-| `OPENCODE_STATUS_ENABLED` | `true` | 实时状态卡片开关 |
-| `OPENCODE_STATUS_INTERVAL` | `1200` | 卡片最小刷新间隔（毫秒） |
+| `OPENCODE_STATUS_ENABLED` | `true` | 进度消息开关 |
+| `OPENCODE_STATUS_MODE` | `bubble` | 进度载体：`bubble`（Hermes 风格文本气泡）\| `card`（交互卡片）\| `off` |
+| `OPENCODE_STATUS_INTERVAL` | `1200` | 气泡最小刷新间隔（毫秒） |
 | `OPENCODE_STATUS_LINES` | `12` | 卡片活动记录滚动显示行数 |
 | `OPENCODE_STATUS_SHOW_REASONING` | `false` | 卡片中是否附推理预览 |
 | `OPENCODE_STATUS_SHOW_TOOL_OUTPUT` | `true` | 工具完成时附输出预览（首几行，截断） |

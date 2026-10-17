@@ -17,6 +17,8 @@ export interface Config {
     model?: string;
     /** Live status card settings */
     statusEnabled: boolean;
+    /** Status carrier: 'bubble' (Hermes-style editable text) | 'card' | 'off' */
+    statusMode: 'bubble' | 'card' | 'off';
     statusInterval: number;
     statusLines: number;
     showThinking: boolean;
@@ -57,6 +59,17 @@ const parseNotificationMode = (value: string | undefined): NotificationMode => {
   return 'normal';
 };
 
+const parseStatusMode = (value: string | undefined): 'bubble' | 'card' | 'off' => {
+  const normalized = (value || '').trim().toLowerCase();
+  if (normalized === 'card') {
+    return 'card';
+  }
+  if (normalized === 'off') {
+    return 'off';
+  }
+  return 'bubble';
+};
+
 const parsePositiveInt = (value: string | undefined, fallback: number): number => {
   const parsed = Number.parseInt((value || '').trim(), 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
@@ -89,6 +102,7 @@ export const config: Config = {
     workingDir: process.env.OPENCODE_WORKING_DIR || process.cwd(),
     model: process.env.OPENCODE_MODEL || undefined,
     statusEnabled: process.env.OPENCODE_STATUS_ENABLED !== 'false',
+    statusMode: parseStatusMode(process.env.OPENCODE_STATUS_MODE),
     statusInterval: parsePositiveInt(process.env.OPENCODE_STATUS_INTERVAL, 1200),
     statusLines: parsePositiveInt(process.env.OPENCODE_STATUS_LINES, 12),
     showThinking: process.env.OPENCODE_STATUS_SHOW_THINKING !== 'false',
