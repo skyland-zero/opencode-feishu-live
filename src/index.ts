@@ -27,6 +27,8 @@ interface QueuedTurn {
   command: string;
   blocks: acp.ContentBlock[];
   mode: TaskResponseMode;
+  /** Feishu message id of the user's triggering message (reply anchor). */
+  replyTo?: string;
 }
 
 interface ManagedSession {
@@ -156,7 +158,7 @@ export class OpenCodeFeishuLive {
       await this.dispatchResponse(bridgeId, chatId, senderId, response, message?.message_id || '');
     } catch (error) {
       logger.error('Error handling message:', error);
-      await this.bot.sendMessage(chatId, '❌ 处理消息失败，请稍后重试。');
+      await this.bot.sendMessage(chatId, '❌ 处理消息失败，请稍后重试。', 'text', message?.message_id || undefined);
     }
   }
 
@@ -168,7 +170,7 @@ export class OpenCodeFeishuLive {
     messageId: string,
   ): Promise<void> {
     if (response.text && !response.executeCommand) {
-      await this.sendText(chatId, response.text);
+      await this.sendText(chatId, response.text, messageId);
     }
 
     if (response.resetSession) {
@@ -176,22 +178,22 @@ export class OpenCodeFeishuLive {
     }
 
     if (response.modelCommand) {
-      await this.handleModelCommand(bridgeId, chatId, response.modelCommand.action, response.modelCommand.model);
+      await this.handleModelCommand(bridgeId, chatId, response.modelCommand.action, response.modelCommand.model, messageId);
       return;
     }
 
     if (response.notifyCommand) {
-      await this.handleNotifyCommand(bridgeId, chatId, response.notifyCommand.action, response.notifyCommand.mode);
+      await this.handleNotifyCommand(bridgeId, chatId, response.notifyCommand.action, response.notifyCommand.mode, messageId);
       return;
     }
 
     if (response.sendFilePath) {
-      await this.handleSendFileCommand(chatId, response.sendFilePath);
+      await this.handleSendFileCommand(chatId, response.sendFilePath, messageId);
       return;
     }
 
     if (response.cancelTask) {
-      await this.handleCancel(bridgeId, chatId);
+      await this.handleCancel(bridgeId, chatId, messageId);
       return;
     }
 
@@ -210,10 +212,11 @@ export class OpenCodeFeishuLive {
     const command = response.executeCommand || '';
     const files = this.consumePendingFiles(bridgeId);
     const mode = await this.resolveResponseMode(bridgeId, response.intentHint || 'task', command);
+    const replyTo = messageId || undefined;
 
     if (files.length > 0 && mode !== 'silent') {
       const names = files.map(file => basename(file)).join(', ');
-      await this.sendText(chatId, `📎 已附带文件：${names}`);
+      await this.sendText(chatId, `📎 已附带文件：${names}`, replyTo);
     }
 
     const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -240,23 +243,23 @@ export class OpenCodeFeishuLive {
       task.status = 'failed';
       task.error = error instanceof Error ? error.message : String(error);
       this.handler.updateTask(task);
-      await this.sendText(chatId, `❌ 无法连接 OpenCode：${task.error}`);
+      await this.sendText(chatId, `❌ 无法连接 OpenCode：${task.error}`, replyTo);
       return;
     }
 
     if (managed.running) {
       if (managed.queue.length >= this.MAX_QUEUE) {
-        await this.sendText(chatId, '⚠️ 当前还有任务在排队，请等前面的任务完成或发送 `!stop` 中断。');
+        await this.sendText(chatId, '⚠️ 当前还有任务在排队，请等前面的任务完成或发送 `!stop` 中断。', replyTo);
         return;
       }
-      managed.queue.push({ taskId, command, blocks, mode });
+      managed.queue.push({ taskId, command, blocks, mode, replyTo });
       if (mode !== 'silent') {
-        await this.sendText(chatId, `⏳ 已排队（前面还有 ${managed.queue.length} 条任务）`);
+        await this.sendText(chatId, `⏳ 已排队（前面还有 ${managed.queue.length} 条任务）`, replyTo);
       }
       return;
     }
 
-    await this.runTurn(managed, { taskId, command, blocks, mode });
+    await this.runTurn(managed, { taskId, command, blocks, mode, replyTo });
   }
 
   // ------------------------------------------------------------------
@@ -292,6 +295,7 @@ export class OpenCodeFeishuLive {
     let usage: TokenUsage | undefined;
     let turnDurationMs = 0;
     let interimChain: Promise<void> = Promise.resolve();
+    const replyTo = turn.replyTo;
 
     const flushHeld = async (): Promise<void> => {
       const pending = heldText.trim();
@@ -299,7 +303,7 @@ export class OpenCodeFeishuLive {
       if (pending.length === 0) {
         return;
       }
-      await this.sendText(chatId, pending);
+      await this.sendText(chatId, pending, replyTo);
     };
 
     const onActivity = (event: ActivityEvent): void => {
@@ -321,7 +325,7 @@ export class OpenCodeFeishuLive {
               return;
             }
             await flushHeld();
-            await this.sendText(chatId, trimmed);
+            await this.sendText(chatId, trimmed, replyTo);
             reporter?.noteContentSent();
           })
           .catch((error: unknown) => {
@@ -409,6 +413,7 @@ export class OpenCodeFeishuLive {
       hasBlocks: collectedBlocks.length > 0,
       blocks: collectedBlocks,
       suppressFooter: Boolean(reporter),
+      replyTo,
     });
 
     managed.running = false;
@@ -438,6 +443,8 @@ export class OpenCodeFeishuLive {
       blocks: string[];
       /** True when a status reporter (bubble/card) already carries the completion line. */
       suppressFooter: boolean;
+      /** Feishu message id to reply-link these messages to. */
+      replyTo?: string;
     },
   ): Promise<void> {
     const footerBits: string[] = [];
@@ -456,7 +463,7 @@ export class OpenCodeFeishuLive {
     const footer = footerBits.join(' · ');
 
     if (info.status === 'failed' && info.error) {
-      await this.sendText(chatId, `${footer}\n原因：${info.error}`);
+      await this.sendText(chatId, `${footer}\n原因：${info.error}`, info.replyTo);
       return;
     }
 
@@ -465,16 +472,16 @@ export class OpenCodeFeishuLive {
       const keepFooter = config.opencode.completionFooterEnabled && mode !== 'silent' && !info.suppressFooter;
       if (joined) {
         const suffix = keepFooter ? `\n\n———\n${footer}` : '';
-        await this.sendText(chatId, `${joined}${suffix}`);
+        await this.sendText(chatId, `${joined}${suffix}`, info.replyTo);
       } else if (keepFooter || info.status !== 'completed') {
-        await this.sendText(chatId, footer);
+        await this.sendText(chatId, footer, info.replyTo);
       }
       return;
     }
 
     const keepFooter = config.opencode.completionFooterEnabled && !info.suppressFooter;
     if (keepFooter || info.status !== 'completed') {
-      await this.sendText(chatId, footer);
+      await this.sendText(chatId, footer, info.replyTo);
     }
   }
 
@@ -572,6 +579,7 @@ export class OpenCodeFeishuLive {
     chatId: string,
     action: 'list' | 'current' | 'set' | 'reset',
     model?: string,
+    replyTo?: string,
   ): Promise<void> {
     if (action === 'list') {
       let catalog = this.lastConfigCatalog;
@@ -582,11 +590,11 @@ export class OpenCodeFeishuLive {
       const modelOption = catalog.find(option => option.id === 'model');
       const options = Array.isArray(modelOption?.options) ? (modelOption?.options as Array<{ value: string; name?: string }>) : [];
       if (options.length === 0) {
-        await this.sendText(chatId, '⚠️ 暂未获取到模型列表，请先发送一条消息建立会话后重试。');
+        await this.sendText(chatId, '⚠️ 暂未获取到模型列表，请先发送一条消息建立会话后重试。', replyTo);
         return;
       }
       const lines = options.map((item, index) => `${index + 1}. ${item.value}`);
-      await this.sendText(chatId, `📚 可用模型（${options.length}）\n${lines.join('\n')}`);
+      await this.sendText(chatId, `📚 可用模型（${options.length}）\n${lines.join('\n')}`, replyTo);
       return;
     }
 
@@ -600,7 +608,7 @@ export class OpenCodeFeishuLive {
         }
       }
       current = current || this.desiredModel.get(bridgeId) || config.opencode.model;
-      await this.sendText(chatId, current ? `🎯 当前会话模型：\`${current}\`` : '🎯 当前会话模型：默认（自动检测）');
+      await this.sendText(chatId, current ? `🎯 当前会话模型：\`${current}\`` : '🎯 当前会话模型：默认（自动检测）', replyTo);
       return;
     }
 
@@ -619,13 +627,13 @@ export class OpenCodeFeishuLive {
           logger.warn(`Model reset failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      await this.sendText(chatId, `♻️ 已恢复默认模型${config.opencode.model ? `：\`${config.opencode.model}\`` : ''}`);
+      await this.sendText(chatId, `♻️ 已恢复默认模型${config.opencode.model ? `：\`${config.opencode.model}\`` : ''}`, replyTo);
       return;
     }
 
     const target = (model || '').trim();
     if (!target) {
-      await this.sendText(chatId, '用法：`/model <model_id>`，或 `/model list` 查看可用模型。');
+      await this.sendText(chatId, '用法：`/model <model_id>`，或 `/model list` 查看可用模型。', replyTo);
       return;
     }
 
@@ -633,7 +641,7 @@ export class OpenCodeFeishuLive {
     if (!managed) {
       // Apply at next session creation
       this.desiredModel.set(bridgeId, target);
-      await this.sendText(chatId, `✅ 已记录模型偏好：\`${target}\`（下条消息生效）`);
+      await this.sendText(chatId, `✅ 已记录模型偏好：\`${target}\`（下条消息生效）`, replyTo);
       return;
     }
 
@@ -644,17 +652,17 @@ export class OpenCodeFeishuLive {
       const suggestText = suggestions.length > 0
         ? `\n你可能想用：\n${suggestions.map(item => `- ${item.value}`).join('\n')}`
         : '';
-      await this.sendText(chatId, `❌ 模型不存在：\`${target}\`\n请先用 \`/model list\` 查看可用模型。${suggestText}`);
+      await this.sendText(chatId, `❌ 模型不存在：\`${target}\`\n请先用 \`/model list\` 查看可用模型。${suggestText}`, replyTo);
       return;
     }
 
     try {
       await managed.live.setConfigOption('model', target);
       this.desiredModel.set(bridgeId, target);
-      await this.sendText(chatId, `✅ 已切换会话模型为：\`${target}\``);
+      await this.sendText(chatId, `✅ 已切换会话模型为：\`${target}\``, replyTo);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await this.sendText(chatId, `❌ 切换模型失败：${message}`);
+      await this.sendText(chatId, `❌ 切换模型失败：${message}`, replyTo);
     }
   }
 
@@ -663,50 +671,52 @@ export class OpenCodeFeishuLive {
     chatId: string,
     action: 'current' | 'set',
     mode?: NotificationMode,
+    replyTo?: string,
   ): Promise<void> {
     if (action === 'current') {
       const current = this.sessionNotifyMode.get(bridgeId) || config.opencode.notifyDefaultMode;
       await this.sendText(
         chatId,
         `🔔 当前推送模式：\`${current}\`\n${this.describeNotifyMode(current)}\n默认模式：\`${config.opencode.notifyDefaultMode}\``,
+        replyTo,
       );
       return;
     }
 
     if (!mode) {
-      await this.sendText(chatId, '用法：`/notify quiet|normal|debug` 或 `/notify current`');
+      await this.sendText(chatId, '用法：`/notify quiet|normal|debug` 或 `/notify current`', replyTo);
       return;
     }
 
     this.sessionNotifyMode.set(bridgeId, mode);
-    await this.sendText(chatId, `✅ 已切换推送模式为：\`${mode}\`\n${this.describeNotifyMode(mode)}`);
+    await this.sendText(chatId, `✅ 已切换推送模式为：\`${mode}\`\n${this.describeNotifyMode(mode)}`, replyTo);
   }
 
   private describeNotifyMode(mode: NotificationMode): string {
     if (mode === 'quiet') {
-      return '只发消息（过程文本 + 结果），不显示实时状态卡片。';
+      return '只发消息（过程文本 + 结果），不显示进度气泡。';
     }
     if (mode === 'normal') {
-      return '实时状态卡片 + 过程文本 + 结果。';
+      return 'Hermes 风格进度气泡（思考/工具行原地刷新）+ 过程文本 + 结果。';
     }
-    return '实时状态卡片 + 过程文本 + 推理预览 + 更详细的工具输出。';
+    return '进度气泡 + 过程文本 + 推理预览 + 更详细的工具输出。';
   }
 
-  private async handleCancel(bridgeId: string, chatId: string): Promise<void> {
+  private async handleCancel(bridgeId: string, chatId: string, replyTo?: string): Promise<void> {
     const managed = this.sessions.get(bridgeId);
     if (!managed || !managed.running) {
-      await this.sendText(chatId, '当前没有正在执行的任务。');
+      await this.sendText(chatId, '当前没有正在执行的任务。', replyTo);
       return;
     }
     await managed.live.cancel();
-    await this.sendText(chatId, '⏹️ 正在中断当前任务…');
+    await this.sendText(chatId, '⏹️ 正在中断当前任务…', replyTo);
   }
 
-  private async handleSendFileCommand(chatId: string, filePathInput: string): Promise<void> {
+  private async handleSendFileCommand(chatId: string, filePathInput: string, replyTo?: string): Promise<void> {
     const resolvedPath = this.resolveFilePath(filePathInput);
     await access(resolvedPath, fsConstants.R_OK);
     await this.bot.sendFile(chatId, resolvedPath);
-    await this.sendText(chatId, `✅ 文件已发送：\`${basename(resolvedPath)}\``);
+    await this.sendText(chatId, `✅ 文件已发送：\`${basename(resolvedPath)}\``, replyTo);
   }
 
   // ------------------------------------------------------------------
@@ -801,7 +811,7 @@ export class OpenCodeFeishuLive {
     return blocks;
   }
 
-  private async sendText(chatId: string, text: string): Promise<void> {
+  private async sendText(chatId: string, text: string, replyTo?: string): Promise<void> {
     const chunks = splitText(text, this.MAX_TEXT_CHUNK);
     for (let index = 0; index < chunks.length; index += 1) {
       const chunk = chunks[index];
@@ -809,7 +819,7 @@ export class OpenCodeFeishuLive {
         continue;
       }
       const body = chunks.length > 1 ? `（${index + 1}/${chunks.length}）\n${chunk}` : chunk;
-      await this.bot.sendMessage(chatId, body);
+      await this.bot.sendMessage(chatId, body, 'text', replyTo);
     }
   }
 
@@ -825,7 +835,7 @@ export class OpenCodeFeishuLive {
 
     const { fileKey, fileName } = this.parseFileContent(message.content);
     if (!fileKey) {
-      await this.bot.sendMessage(chatId, '❌ 收到文件消息，但未解析到 file_key。');
+      await this.bot.sendMessage(chatId, '❌ 收到文件消息，但未解析到 file_key。', 'text', message.message_id);
       return;
     }
 
@@ -855,6 +865,8 @@ export class OpenCodeFeishuLive {
     await this.bot.sendMessage(
       chatId,
       `📎 已接收文件：\`${safeName}\`\n请继续发送任务指令，我会将该文件传给 OpenCode。`,
+      'text',
+      message.message_id,
     );
   }
 

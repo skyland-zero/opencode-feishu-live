@@ -46,8 +46,13 @@ export class FeishuBot extends EventEmitter {
     }
   }
 
-  async sendMessage(chatId: string, content: string, msgType: string = 'text'): Promise<string | undefined> {
-    return this.wsClient.sendMessage(chatId, content, msgType);
+  async sendMessage(
+    chatId: string,
+    content: string,
+    msgType: string = 'text',
+    replyToMessageId?: string,
+  ): Promise<string | undefined> {
+    return this.wsClient.sendMessage(chatId, content, msgType, replyToMessageId);
   }
 
   async patchCard(messageId: string, card: Record<string, unknown>): Promise<void> {
@@ -73,10 +78,6 @@ export class FeishuBot extends EventEmitter {
     resourceType?: string;
   }): Promise<void> {
     await this.wsClient.downloadMessageFile(params);
-  }
-
-  async replyToMessage(messageId: string, content: string, msgType: string = 'text'): Promise<void> {
-    await this.wsClient.replyToMessage(messageId, content, msgType);
   }
 
   async stop(): Promise<void> {

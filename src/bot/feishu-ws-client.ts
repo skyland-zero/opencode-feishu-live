@@ -93,11 +93,43 @@ export class FeishuWSClient extends EventEmitter {
     this.emit('message', messageEvent);
   }
 
-  async sendMessage(chatId: string, content: string, msgType: string = 'text'): Promise<string | undefined> {
+  /**
+   * Send a message. When replyToMessageId is given, the message is delivered as a
+   * Feishu reply (quoted) to that message; if the reply target is gone the call
+   * falls back to a plain new message.
+   */
+  async sendMessage(
+    chatId: string,
+    content: string,
+    msgType: string = 'text',
+    replyToMessageId?: string,
+  ): Promise<string | undefined> {
+    const payloadContent = this.formatMessageContent(content, msgType);
+
+    if (replyToMessageId) {
+      try {
+        const resp = await this.client.im.v1.message.reply({
+          path: { message_id: replyToMessageId },
+          data: {
+            content: payloadContent,
+            msg_type: msgType,
+          },
+        });
+        if (resp.code !== 0) {
+          throw new Error(`reply failed: ${resp.msg} (code=${resp.code})`);
+        }
+        return resp.data?.message_id;
+      } catch (error) {
+        Logger.warn(
+          'FeishuWSClient',
+          `Reply to ${replyToMessageId} failed (${this.getErrorMessage(error)}); falling back to a plain message`,
+        );
+      }
+    }
+
     Logger.info('FeishuWSClient', `Sending message to chat ${chatId}`);
 
     try {
-      const payloadContent = this.formatMessageContent(content, msgType);
       const resp = await this.client.im.v1.message.create({
         params: {
           receive_id_type: 'chat_id',
@@ -265,34 +297,6 @@ export class FeishuWSClient extends EventEmitter {
       await fileResp.writeFile(targetPath);
     } catch (error) {
       Logger.error('FeishuWSClient', `Failed to download message file: ${this.getErrorMessage(error)}`);
-      throw error;
-    }
-  }
-
-  async replyToMessage(messageId: string, content: string, msgType: string = 'text'): Promise<void> {
-    if (!messageId) {
-      throw new Error('messageId is required when replying to message');
-    }
-
-    Logger.info('FeishuWSClient', `Replying to message ${messageId}`);
-
-    try {
-      const payloadContent = this.formatMessageContent(content, msgType);
-      const resp = await this.client.im.v1.message.reply({
-        path: {
-          message_id: messageId,
-        },
-        data: {
-          content: payloadContent,
-          msg_type: msgType,
-        },
-      });
-
-      if (resp.code !== 0) {
-        throw new Error(`Failed to reply to message: ${resp.msg}`);
-      }
-    } catch (error) {
-      Logger.error('FeishuWSClient', `Failed to reply to message: ${this.getErrorMessage(error)}`);
       throw error;
     }
   }
